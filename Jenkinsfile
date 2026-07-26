@@ -6,6 +6,7 @@ pipeline {
         IMAGE_NAME = "authentication-service"
         IMAGE_TAG = "${BUILD_NUMBER}"
         K8S_NAMESPACE = "default"
+        PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
     }
 
     tools {
@@ -17,27 +18,12 @@ pipeline {
         stage('Verify Environment') {
             steps {
                 sh '''
-                    export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
-
-                    echo "===== JAVA ====="
                     java -version
-
-                    echo ""
-                    echo "===== MAVEN ====="
                     mvn -version
-
-                    echo ""
-                    echo "===== DOCKER ====="
                     docker --version
-
-                    echo ""
-                    echo "===== KUBECTL ====="
                     kubectl version --client
-
-                    echo ""
-                    echo "===== WORKSPACE ====="
-                    pwd
-                    ls -la
+                    kubectl config current-context
+                    kubectl get nodes
                 '''
             }
         }
@@ -45,8 +31,6 @@ pipeline {
         stage('Build Maven Package') {
             steps {
                 sh '''
-                    export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
-
                     mvn clean package -DskipTests
                 '''
             }
@@ -55,8 +39,6 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh """
-                    export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
-
                     docker build \
                         -t ${IMAGE_NAME}:${IMAGE_TAG} \
                         -t ${IMAGE_NAME}:latest .
@@ -67,9 +49,7 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 sh """
-                    export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
-
-                    kubectl apply -f k8s/
+                    kubectl apply -f authentication-deployment.yaml
 
                     kubectl set image deployment/${APP_NAME} \
                         ${APP_NAME}=${IMAGE_NAME}:${IMAGE_TAG} \
@@ -81,8 +61,6 @@ pipeline {
         stage('Wait for Rollout') {
             steps {
                 sh """
-                    export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH
-
                     kubectl rollout status deployment/${APP_NAME} \
                         -n ${K8S_NAMESPACE}
                 """
@@ -92,27 +70,28 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 sh '''
-                    export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH
-
-                    echo "===== PODS ====="
-                    kubectl get pods
+                    echo "========== PODS =========="
+                    kubectl get pods -o wide
 
                     echo ""
-                    echo "===== DEPLOYMENTS ====="
+                    echo "========== DEPLOYMENTS =========="
                     kubectl get deployments
 
                     echo ""
-                    echo "===== SERVICES ====="
+                    echo "========== SERVICES =========="
                     kubectl get svc
+
+                    echo ""
+                    echo "========== IMAGE =========="
+                    kubectl describe deployment authentication-service | grep Image
                 '''
             }
         }
     }
 
     post {
-
         success {
-            echo "Pipeline completed successfully."
+            echo "Application deployed successfully to Docker Desktop Kubernetes."
         }
 
         failure {
