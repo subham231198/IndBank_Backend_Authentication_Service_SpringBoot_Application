@@ -36,7 +36,10 @@ services:
       interval: 5s
 
   authentication-service:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: authentication-service:latest
     container_name: authentication-service
     ports:
       - "7079:7079"
@@ -51,6 +54,7 @@ services:
       SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: "60000"
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
+      SERVER_PORT: "7079"
     depends_on:
       mysql:
         condition: service_healthy

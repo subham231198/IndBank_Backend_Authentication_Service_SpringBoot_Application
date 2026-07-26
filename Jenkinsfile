@@ -122,9 +122,8 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
-                    echo "Building Docker image..."
-                    docker compose build authentication-service
-
+                    echo "Building Docker image using docker build..."
+                    docker build -t ${IMAGE_NAME}:latest .
                     docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG}
 
                     echo "Image details:"
@@ -393,15 +392,11 @@ EOF
                 grep "${HOSTNAME}" /etc/hosts
 
                 echo ""
-                echo "Testing application accessibility..."
-                sleep 3
-
                 echo "Application URL: http://${HOSTNAME}"
                 echo ""
                 echo "=========================================="
                 echo "Postman Configuration:"
                 echo "  Base URL: http://${HOSTNAME}"
-                echo "  Example: http://${HOSTNAME}/api/v1/..."
                 echo "=========================================="
             '''
         }
