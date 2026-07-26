@@ -20,25 +20,59 @@ pipeline {
                     echo "========== JAVA =========="
                     java -version
 
+                    echo ""
                     echo "========== MAVEN =========="
                     mvn -version
 
+                    echo ""
                     echo "========== DOCKER =========="
                     docker --version
 
+                    echo ""
+                    echo "========== DOCKER COMPOSE =========="
+                    docker compose version
+
+                    echo ""
                     echo "========== KUBECTL =========="
                     kubectl version --client
 
-                    echo "========== CURRENT CONTEXT =========="
-                    kubectl config current-context
-
-                    echo "========== CLUSTER =========="
+                    echo ""
+                    echo "========== KUBERNETES =========="
                     kubectl get nodes
                 '''
             }
         }
 
-        stage('Build Maven Package') {
+        stage('Ensure MySQL & Redis Running') {
+            steps {
+                sh '''
+                    echo "Checking MySQL..."
+
+                    if docker ps --format '{{.Names}}' | grep -q "^auth_mysql$"; then
+                        echo "MySQL is already running."
+                    else
+                        echo "Starting MySQL..."
+                        docker compose up -d mysql
+                    fi
+
+                    echo ""
+
+                    echo "Checking Redis..."
+
+                    if docker ps --format '{{.Names}}' | grep -q "^auth_redis$"; then
+                        echo "Redis is already running."
+                    else
+                        echo "Starting Redis..."
+                        docker compose up -d redis
+                    fi
+
+                    echo ""
+                    docker ps
+                '''
+            }
+        }
+
+        stage('Build Spring Boot Application') {
             steps {
                 sh '''
                     mvn clean package -DskipTests
@@ -49,38 +83,27 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
-                    docker build \
-                      -t authentication-service:latest \
-                      -t authentication-service:${BUILD_NUMBER} .
+                    docker compose build authentication-service
 
                     docker images | grep authentication-service
+                '''
+            }
+        }
 
+        stage('Load Image into Docker Desktop Kubernetes') {
+            steps {
+                sh '''
                     echo "Loading image into Docker Desktop Kubernetes..."
-                    docker save authentication-service:latest -o authentication-service.tar
+
+                    docker save authentication-service:latest \
+                        -o authentication-service.tar
+
                     docker desktop kubernetes images load authentication-service.tar
                 '''
             }
         }
 
-        stage('Start NGINX Pod') {
-            steps {
-                sh '''
-                    if ! kubectl get pod nginx >/dev/null 2>&1; then
-                        echo "Starting NGINX Pod..."
-                        kubectl run nginx --image=nginx --restart=Never
-                    else
-                        echo "NGINX Pod already exists."
-                    fi
-
-                    kubectl wait \
-                        --for=condition=Ready \
-                        pod/nginx \
-                        --timeout=120s || true
-                '''
-            }
-        }
-
-        stage('Deploy Application') {
+        stage('Deploy to Kubernetes') {
             steps {
                 sh '''
                     echo "Removing previous deployment..."
@@ -90,7 +113,7 @@ pipeline {
 
                     sleep 5
 
-                    echo "Deploying application..."
+                    echo "Deploying latest version..."
 
                     kubectl apply -f authentication-deployment.yaml
 
@@ -102,26 +125,23 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 sh '''
+                    echo ""
                     echo "========== DEPLOYMENTS =========="
                     kubectl get deployments
 
                     echo ""
-
                     echo "========== PODS =========="
                     kubectl get pods -o wide
 
                     echo ""
-
                     echo "========== SERVICES =========="
                     kubectl get svc
 
                     echo ""
-
-                    echo "========== DEPLOYMENT =========="
-                    kubectl describe deployment ${APP_NAME}
+                    echo "========== CURRENT IMAGE =========="
+                    kubectl describe deployment ${APP_NAME} | grep Image || true
 
                     echo ""
-
                     echo "========== EVENTS =========="
                     kubectl get events --sort-by=.metadata.creationTimestamp | tail -20
                 '''
@@ -132,17 +152,19 @@ pipeline {
     post {
 
         success {
-            echo "======================================="
+            echo "=========================================="
             echo "Application deployed successfully!"
-            echo "======================================="
+            echo "=========================================="
         }
 
         failure {
-            echo "======================================="
+
+            echo "=========================================="
             echo "Deployment failed!"
-            echo "======================================="
+            echo "=========================================="
 
             sh '''
+                echo ""
                 kubectl get all
 
                 echo ""
@@ -150,6 +172,12 @@ pipeline {
 
                 echo ""
                 kubectl describe pods -l app=${APP_NAME} || true
+
+                echo ""
+                docker ps
+
+                echo ""
+                docker compose ps
             '''
         }
 
