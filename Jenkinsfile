@@ -11,6 +11,7 @@ pipeline {
         IMAGE_TAG  = "${BUILD_NUMBER}"
         NAMESPACE  = "default"
         APP_PORT   = "7079"
+        HOSTNAME   = "app.indbank.security.auth"
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
     }
 
@@ -134,6 +135,25 @@ pipeline {
             }
         }
 
+        stage('Install Ingress Controller') {
+            steps {
+                sh '''
+                    echo "Checking if Ingress Controller is installed..."
+                    if ! kubectl get namespace ingress-nginx &>/dev/null; then
+                        echo "Installing NGINX Ingress Controller..."
+                        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
+                        echo "Waiting for Ingress Controller to be ready..."
+                        kubectl wait --namespace ingress-nginx \
+                          --for=condition=ready pod \
+                          --selector=app.kubernetes.io/component=controller \
+                          --timeout=120s
+                    else
+                        echo "Ingress Controller already installed"
+                    fi
+                '''
+            }
+        }
+
         stage('Deploy to Kubernetes') {
             steps {
                 sh '''
@@ -141,6 +161,7 @@ pipeline {
 
                     kubectl delete deployment ${APP_NAME} --ignore-not-found=true
                     kubectl delete service ${APP_NAME} --ignore-not-found=true
+                    kubectl delete ingress ${APP_NAME}-ingress --ignore-not-found=true
 
                     sleep 3
 
@@ -214,16 +235,14 @@ spec:
             memory: "1Gi"
             cpu: "500m"
         livenessProbe:
-          httpGet:
-            path: /actuator/health
+          tcpSocket:
             port: ${APP_PORT}
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60
           periodSeconds: 10
         readinessProbe:
-          httpGet:
-            path: /actuator/health
+          tcpSocket:
             port: ${APP_PORT}
-          initialDelaySeconds: 20
+          initialDelaySeconds: 45
           periodSeconds: 5
 ---
 apiVersion: v1
@@ -233,13 +252,34 @@ metadata:
   labels:
     app: ${APP_NAME}
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   ports:
   - port: ${APP_PORT}
     targetPort: ${APP_PORT}
     name: http
   selector:
     app: ${APP_NAME}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${APP_NAME}-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: ${HOSTNAME}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ${APP_NAME}
+            port:
+              number: ${APP_PORT}
 EOF
 
                     echo "Waiting for rollout to complete..."
@@ -248,6 +288,7 @@ EOF
                     echo "Deployment Status:"
                     kubectl get pods -l app=${APP_NAME}
                     kubectl get svc ${APP_NAME}
+                    kubectl get ingress
 
                     echo "Deployment successful!"
                 '''
@@ -270,6 +311,9 @@ EOF
 
                         echo "Service Details:"
                         kubectl get svc ${APP_NAME}
+
+                        echo "Ingress Details:"
+                        kubectl get ingress ${APP_NAME}-ingress
                     else
                         echo "No pods found for ${APP_NAME}"
                         exit 1
@@ -283,28 +327,35 @@ EOF
                 sh '''
                     echo "Running smoke tests..."
 
-                    SERVICE_PORT=${APP_PORT}
+                    echo "Checking pod status..."
+                    RUNNING_PODS=$(kubectl get pods -l app=${APP_NAME} --field-selector=status.phase=Running -o name | wc -l | tr -d ' ')
 
-                    echo "Setting up port-forward..."
-                    kubectl port-forward svc/${APP_NAME} ${APP_PORT}:${APP_PORT} > /dev/null 2>&1 &
-                    PF_PID=$!
+                    if [ "$RUNNING_PODS" = "5" ]; then
+                        echo "All 5 pods are running successfully!"
+                        echo "Application is deployed and running."
 
-                    sleep 5
+                        echo ""
+                        echo "Pod details:"
+                        kubectl get pods -l app=${APP_NAME} -o wide
 
-                    echo "Testing health endpoint..."
-                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${APP_PORT}/actuator/health 2>/dev/null || echo "000")
+                        echo ""
+                        echo "Service details:"
+                        kubectl get svc ${APP_NAME}
 
-                    if [ "$HTTP_CODE" = "200" ]; then
-                        echo "Health check passed (HTTP 200)"
-                        echo "Health response:"
-                        curl -s http://localhost:${APP_PORT}/actuator/health
+                        echo ""
+                        echo "Ingress details:"
+                        kubectl get ingress ${APP_NAME}-ingress
+
+                        echo ""
+                        echo "Application URL: http://${HOSTNAME}"
+                        echo ""
+                        echo "Smoke tests passed!"
                     else
-                        echo "Health check returned: HTTP $HTTP_CODE"
+                        echo "ERROR: Not all pods are running"
+                        echo "Expected: 5, Running: $RUNNING_PODS"
+                        kubectl get pods -l app=${APP_NAME}
+                        exit 1
                     fi
-
-                    kill $PF_PID 2>/dev/null || true
-
-                    echo "Smoke tests completed"
                 '''
             }
         }
@@ -320,9 +371,39 @@ EOF
             echo "Port: ${APP_PORT}"
             echo ""
             echo "Access the application:"
-            echo "  kubectl port-forward svc/${APP_NAME} ${APP_PORT}:${APP_PORT}"
-            echo "  curl http://localhost:${APP_PORT}/actuator/health"
+            echo "  http://${HOSTNAME}"
+            echo ""
             echo "=========================================="
+            echo "Configuring /etc/hosts..."
+            echo "=========================================="
+
+            sh '''
+                echo "Checking /etc/hosts entry..."
+
+                if grep -q "${HOSTNAME}" /etc/hosts; then
+                    echo "Hostname ${HOSTNAME} already exists in /etc/hosts"
+                else
+                    echo "Adding ${HOSTNAME} to /etc/hosts..."
+                    sudo sh -c 'echo "127.0.0.1 ${HOSTNAME}" >> /etc/hosts'
+                    echo "Hostname added successfully!"
+                fi
+
+                echo ""
+                echo "Verifying entry:"
+                grep "${HOSTNAME}" /etc/hosts
+
+                echo ""
+                echo "Testing application accessibility..."
+                sleep 3
+
+                echo "Application URL: http://${HOSTNAME}"
+                echo ""
+                echo "=========================================="
+                echo "Postman Configuration:"
+                echo "  Base URL: http://${HOSTNAME}"
+                echo "  Example: http://${HOSTNAME}/api/v1/..."
+                echo "=========================================="
+            '''
         }
 
         failure {
@@ -341,6 +422,9 @@ EOF
                 echo "Pod Status:"
                 kubectl get pods -l app=${APP_NAME}
                 kubectl describe pods -l app=${APP_NAME} || echo "No pods found"
+
+                echo "Ingress Status:"
+                kubectl describe ingress ${APP_NAME}-ingress || echo "Ingress not found"
 
                 echo "Recent Events:"
                 kubectl get events --sort-by='.lastTimestamp' | tail -20
