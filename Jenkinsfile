@@ -6,9 +6,9 @@ pipeline {
     }
 
     environment {
-        APP_NAME = "authentication-service"
+        APP_NAME   = "authentication-service"
         IMAGE_NAME = "authentication-service"
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_TAG  = "${BUILD_NUMBER}"
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
     }
 
@@ -50,16 +50,10 @@ pipeline {
             steps {
                 sh '''
                     docker build \
-                        -t authentication-service:${BUILD_NUMBER} \
-                        -t authentication-service:latest .
-                '''
-            }
-        }
+                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
+                        -t ${IMAGE_NAME}:latest .
 
-        stage('Verify Docker Image') {
-            steps {
-                sh '''
-                    docker images | grep authentication-service
+                    docker images | grep ${IMAGE_NAME}
                 '''
             }
         }
@@ -68,13 +62,16 @@ pipeline {
             steps {
                 sh '''
                     if ! kubectl get pod nginx >/dev/null 2>&1; then
-                        echo "Starting NGINX pod..."
+                        echo "Starting NGINX Pod..."
                         kubectl run nginx --image=nginx --restart=Never
                     else
-                        echo "NGINX pod already running."
+                        echo "NGINX Pod already exists."
                     fi
 
-                    kubectl get pods
+                    kubectl wait \
+                        --for=condition=Ready \
+                        pod/nginx \
+                        --timeout=120s || true
                 '''
             }
         }
@@ -82,12 +79,18 @@ pipeline {
         stage('Deploy Application') {
             steps {
                 sh '''
+                    echo "Removing previous deployment..."
+
+                    kubectl delete deployment ${APP_NAME} --ignore-not-found=true
+                    kubectl delete service ${APP_NAME} --ignore-not-found=true
+
+                    sleep 5
+
+                    echo "Deploying application..."
+
                     kubectl apply -f authentication-deployment.yaml
 
-                    kubectl set image deployment/authentication-service \
-                        authentication-service=authentication-service:${BUILD_NUMBER}
-
-                    kubectl rollout status deployment/authentication-service --timeout=300s
+                    kubectl rollout status deployment/${APP_NAME} --timeout=300s
                 '''
             }
         }
@@ -99,18 +102,22 @@ pipeline {
                     kubectl get deployments
 
                     echo ""
+
                     echo "========== PODS =========="
                     kubectl get pods -o wide
 
                     echo ""
+
                     echo "========== SERVICES =========="
                     kubectl get svc
 
                     echo ""
-                    echo "========== CURRENT IMAGE =========="
-                    kubectl describe deployment authentication-service | grep Image || true
+
+                    echo "========== DEPLOYMENT =========="
+                    kubectl describe deployment ${APP_NAME}
 
                     echo ""
+
                     echo "========== EVENTS =========="
                     kubectl get events --sort-by=.metadata.creationTimestamp | tail -20
                 '''
@@ -119,20 +126,26 @@ pipeline {
     }
 
     post {
+
         success {
-            echo "=================================="
+            echo "======================================="
             echo "Application deployed successfully!"
-            echo "=================================="
+            echo "======================================="
         }
 
         failure {
-            echo "=================================="
-            echo "Deployment failed."
-            echo "=================================="
+            echo "======================================="
+            echo "Deployment failed!"
+            echo "======================================="
 
             sh '''
                 kubectl get all
-                kubectl describe deployment authentication-service || true
+
+                echo ""
+                kubectl describe deployment ${APP_NAME} || true
+
+                echo ""
+                kubectl describe pods -l app=${APP_NAME} || true
             '''
         }
 
