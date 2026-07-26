@@ -72,7 +72,7 @@ pipeline {
                         echo "Installing NGINX Ingress Controller..."
 
                         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
-
+                        kubectl run nginx --image nginx
                         kubectl wait \
                           --namespace ingress-nginx \
                           --for=condition=Ready pod \
@@ -84,7 +84,25 @@ pipeline {
                 '''
             }
         }
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh '''
+                    echo "Starting NGINX Pod..."
+                    kubectl run nginx --image=nginx --restart=Never || true
 
+                    echo "Creating Authentication Deployment..."
+                    kubectl create deployment authentication-service --image=nginx || true
+
+                    echo "Waiting for deployment..."
+                    kubectl rollout status deployment/authentication-service --timeout=300s
+
+                    echo "Current Resources"
+                    kubectl get pods
+                    kubectl get deployments
+                    kubectl get svc
+                '''
+            }
+        }
         stage('Deploy Application') {
             steps {
                 sh '''
@@ -97,7 +115,8 @@ pipeline {
             steps {
                 sh '''
                     kubectl set image deployment/authentication-service \
-                    authentication-service=authentication-service:${BUILD_NUMBER}
+                    authentication-service=authentication-service:${BUILD_NUMBER} \
+                    --record || true
                 '''
             }
         }
