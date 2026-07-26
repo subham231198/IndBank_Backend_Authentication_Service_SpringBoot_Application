@@ -2,7 +2,11 @@ package com.example.Ind.Auth.AuthenticationService.Configuration;
 
 import com.example.Ind.Auth.AuthenticationService.DTO.UserAuthDTO;
 import com.example.Ind.Auth.AuthenticationService.Entity.OAuthClientEntity;
+import com.example.Ind.Auth.AuthenticationService.Entity.UsernameAuthEntity;
 import com.example.Ind.Auth.AuthenticationService.Repository.OAuthClientRepository;
+import com.example.Ind.Auth.AuthenticationService.Repository.UsernameAuthRepo;
+import com.example.Ind.Auth.AuthenticationService.Utility.GeneratorService;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
@@ -33,16 +37,12 @@ import org.springframework.security.oauth2.server.authorization.settings.Authori
 import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
 import org.springframework.security.oauth2.server.authorization.settings.OAuth2TokenFormat;
 import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
-import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenGenerator;
 import org.springframework.security.oauth2.server.resource.introspection.OAuth2IntrospectionAuthenticatedPrincipal;
 import org.springframework.security.oauth2.server.resource.introspection.OpaqueTokenIntrospector;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.web.util.matcher.RequestMatcher;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
-import org.springframework.web.client.RestTemplate;
 import java.time.Duration;
 import java.util.*;
 
@@ -56,6 +56,11 @@ public class AuthorizationServerConfig {
     @Autowired
     private OAuthClientRepository oAuthClientRepository;
 
+    @Autowired
+    private GeneratorService generatorService;
+
+    @Autowired
+    private UsernameAuthRepo usernameAuthRepo;
 
     @Bean
     public PasswordEncoder passwordEncoder() {
@@ -88,6 +93,40 @@ public class AuthorizationServerConfig {
         return http.build();
     }
 
+    @PostConstruct
+    public void initDefaultUser() {
+        long userCount = usernameAuthRepo.count();
+        if (userCount == 0) {
+            log.info("No users found in database. Creating default user.");
+
+            UsernameAuthEntity usernameAuthEntity = new UsernameAuthEntity();
+            usernameAuthEntity.setUsername(generatorService.generateCustomerId());
+            usernameAuthEntity.setCustomerServiceId(generatorService.generateCustomerServiceId());
+            usernameAuthEntity.setPassword(passwordEncoder().encode("1q2w3e4r"));
+            usernameAuthEntity.setPhone("john1.doe@test.com");
+            usernameAuthEntity.setIsActive(true);
+            usernameAuthEntity.setAuth_level("30");
+            usernameAuthEntity.setIsProfileSuspended(false);
+            usernameAuthEntity.setIsProfileProvisioned(false);
+            usernameAuthEntity.setIsProfileLocked(false);
+            usernameAuthEntity.setIsPasswordLocked(false);
+            usernameAuthEntity.setIsOTPLocked(false);
+            usernameAuthEntity.setFailedPasswordAttempts(0);
+            usernameAuthEntity.setIsInterstitialPageShown(false);
+            usernameAuthEntity.setFailedOTPAttempts(0);
+            usernameAuthEntity.setLastSuccessfulLogin(null);
+            usernameAuthEntity.setLastFailedLogin(null);
+
+            log.info("Default user created: {}", usernameAuthEntity.toString());
+
+            UsernameAuthEntity savedEntity = usernameAuthRepo.save(usernameAuthEntity);
+            log.info("Default user saved with ID: {}", savedEntity.getId());
+            log.info("Default username: {}", savedEntity.getUsername());
+            log.info("Default password: 1q2w3e4r");
+        }
+    }
+
+
     @Bean
     @Order(2)
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
@@ -114,7 +153,8 @@ public class AuthorizationServerConfig {
                                 "/callback",
                                 "/v1/oauth/introspect",
                                 "/api/security/rest-sts/logout",
-                                "/api/admin/reset-password"
+                                "/api/admin/reset-password",
+                                "/api/v1/secrets/oauth"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
@@ -189,6 +229,25 @@ public class AuthorizationServerConfig {
                     .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
                     .redirectUri(client.getRedirectUri())
                     .scope(client.getScopes())
+                    .clientSettings(ClientSettings.builder()
+                            .requireProofKey(false)
+                            .build())
+                    .tokenSettings(tokenSettings())
+                    .build();
+
+            registeredClients.add(registeredClient);
+        }
+        if(clients.isEmpty()) {
+            RegisteredClient registeredClient = RegisteredClient
+                    .withId(UUID.randomUUID().toString())
+                    .clientId("emergency-dummy-clientId")
+                    .clientSecret(passwordEncoder().encode("1q2w3e4r"))
+                    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                    .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
+                    .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                    .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+                    .redirectUri("http://localhost:7079/callback")
+                    .scope("openid")
                     .clientSettings(ClientSettings.builder()
                             .requireProofKey(false)
                             .build())

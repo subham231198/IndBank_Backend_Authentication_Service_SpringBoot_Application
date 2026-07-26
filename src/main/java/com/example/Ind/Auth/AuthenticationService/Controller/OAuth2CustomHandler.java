@@ -1,9 +1,12 @@
 package com.example.Ind.Auth.AuthenticationService.Controller;
 
+import com.example.Ind.Auth.AuthenticationService.Configuration.AuthorizationServerConfig;
 import com.example.Ind.Auth.AuthenticationService.DTO.CustomAccessTokenDTO;
 import com.example.Ind.Auth.AuthenticationService.DTO.CustomAuthCodeDTO;
 import com.example.Ind.Auth.AuthenticationService.DTO.CustomerSessionDTO;
 import com.example.Ind.Auth.AuthenticationService.DTO.UserAuthDTO;
+import com.example.Ind.Auth.AuthenticationService.Entity.OAuthClientEntity;
+import com.example.Ind.Auth.AuthenticationService.Repository.OAuthClientRepository;
 import com.example.Ind.Auth.AuthenticationService.Repository.UsernameAuthRepo;
 import com.example.Ind.Auth.AuthenticationService.Service.AccessTokenCache;
 import com.example.Ind.Auth.AuthenticationService.Service.AuthCodeCacheService;
@@ -12,27 +15,36 @@ import com.example.Ind.Auth.AuthenticationService.Service.SessionAttributesServi
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.server.authorization.client.InMemoryRegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import jakarta.annotation.PostConstruct;
+import java.net.InetAddress;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.time.Instant;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
+@Slf4j
 @RestController
-public class OAuth2CustomHandler extends SessionAttributesService{
+public class OAuth2CustomHandler extends SessionAttributesService {
 
     @Autowired
     private UserAuthDTO userAuthDTO;
@@ -50,10 +62,50 @@ public class OAuth2CustomHandler extends SessionAttributesService{
     private UsernameAuthRepo usernameAuthRepo;
 
     @Autowired
+    private OAuthClientRepository oAuthClientRepository;
+
+    @Autowired
+    private PasswordEncoder bryptPasswordEncoder;
+
+    @Autowired
     private AccessTokenCache accessTokenCache;
 
+    @Value("${server.port:7079}")
+    private int serverPort;
+
+    @Value("${server.host:172.19.0.4}")
+    private String serverHost;
+
+    @Autowired
+    private AuthorizationServerConfig  authorizationServerConfig;
+
+    @Autowired
+    private RegisteredClientRepository registeredClientRepository;
+
+    private String baseUrl;
 
     private static final Logger logger = LogManager.getLogger(OAuth2CustomHandler.class);
+
+    @PostConstruct
+    public void initBaseUrl() {
+        try {
+            String host = serverHost;
+            if ("localhost".equals(host)) {
+                String hostAddress = InetAddress.getLocalHost().getHostAddress();
+                baseUrl = "http://" + hostAddress + ":" + serverPort;
+            } else {
+                baseUrl = "http://" + host + ":" + serverPort;
+            }
+            logger.info("Base URL initialized: {}", baseUrl);
+        } catch (UnknownHostException e) {
+            logger.error("Failed to get host address, using default localhost", e);
+            baseUrl = "http://localhost:" + serverPort;
+        }
+    }
+
+    private String getBaseUrl() {
+        return baseUrl;
+    }
 
     @GetMapping("/v1/oauth/authorize")
     public ResponseEntity<?> initiateAuthorization(
@@ -65,13 +117,11 @@ public class OAuth2CustomHandler extends SessionAttributesService{
             @RequestHeader("X-CustomerSessionId") String customerSessionId
     ) throws JsonProcessingException {
         Optional<CustomerSessionDTO> sessionDTO = Optional.ofNullable(customerSessionCacheService.getCustomerSession(customerSessionId));
-        if(!sessionDTO.isPresent() || !validSessionExpiry(sessionDTO.get().getExpiresAt()))
-        {
+        if (!sessionDTO.isPresent() || !validSessionExpiry(sessionDTO.get().getExpiresAt())) {
             return ResponseEntity
                     .status(HttpStatus.BAD_REQUEST)
                     .body(Map.of("error", "invalid_customer_authentication"));
         }
-
 
         if (!isValidClient(clientId)) {
             return ResponseEntity
@@ -92,7 +142,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         }
 
         String authorizationUrl = UriComponentsBuilder
-                .fromHttpUrl("http://localhost:7079/oauth2/authorize")
+                .fromHttpUrl(getBaseUrl() + "/oauth2/authorize")
                 .queryParam("response_type", responseType)
                 .queryParam("client_id", clientId)
                 .queryParam("redirect_uri", redirectURI)
@@ -139,7 +189,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         }
     }
 
-    public void updateAuthCodeCache(CustomerSessionDTO customerSessionDTO, String code){
+    public void updateAuthCodeCache(CustomerSessionDTO customerSessionDTO, String code) {
         CustomAuthCodeDTO authCodeDTO = new CustomAuthCodeDTO();
         authCodeDTO.setCode(code);
         authCodeDTO.setCustomerId(customerSessionDTO.getCustomerId());
@@ -153,7 +203,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
     @GetMapping("/callback")
     public String handleCallback(@RequestParam("code") String code) {
 
-        String tokenUrl = "http://localhost:9091/oauth2/token";
+        String tokenUrl = getBaseUrl() + "/oauth2/token";
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -165,7 +215,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
         body.add("grant_type", "authorization_code");
         body.add("code", code);
-        body.add("redirect_uri", "http://localhost:9091/callback");
+        body.add("redirect_uri", getBaseUrl() + "/callback");
 
         HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(body, headers);
 
@@ -205,7 +255,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(form, headers);
 
         ResponseEntity<String> response = restTemplate.postForEntity(
-                "http://localhost:7079/login",
+                getBaseUrl() + "/login",
                 request,
                 String.class
         );
@@ -222,7 +272,6 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         }
         return location.substring(startIndex, endIndex);
     }
-
 
     @PostMapping(
             value = "/v1/oauth/access_token",
@@ -291,7 +340,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
             String customerSessionId = authCodeDTO.getCustomerSessionId();
             logger.info("CustomerId from cache: {}", customerId);
 
-            String tokenUrl = "http://localhost:7079/oauth2/token";
+            String tokenUrl = getBaseUrl() + "/oauth2/token";
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -396,7 +445,7 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         }
 
         try {
-            String introspectUrl = "http://localhost:7079/oauth2/introspect";
+            String introspectUrl = getBaseUrl() + "/oauth2/introspect";
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -478,5 +527,62 @@ public class OAuth2CustomHandler extends SessionAttributesService{
         }
     }
 
+    @PostMapping(
+            value = "/api/v1/secrets/oauth",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<?> createOAuthClientCredentials(
+            @RequestHeader("X-CustomerSessionId") String customerSessionId
+    ) {
+        log.info("=== Creating OAuth Client Credentials ===");
 
+        Optional<CustomerSessionDTO> sessionDTO = Optional.ofNullable(
+                customerSessionCacheService.getCustomerSession(customerSessionId)
+        );
+
+        if (!sessionDTO.isPresent() || !validSessionExpiry(sessionDTO.get().getExpiresAt())) {
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "invalid_customer_authentication"));
+        }
+
+        String clientId = UUID.randomUUID().toString();
+        String clientSecret = UUID.randomUUID().toString();
+
+        OAuthClientEntity oAuthClientEntity = new OAuthClientEntity();
+        oAuthClientEntity.setClientId(clientId);
+        oAuthClientEntity.setClientSecret(bryptPasswordEncoder.encode(clientSecret));
+        oAuthClientEntity.setGrantTypes("code");
+        oAuthClientEntity.setScopes("openid");
+        oAuthClientEntity.setRedirectUri("http://localhost:7079/callback");
+
+        log.info("Client ID: {}, Client Secret: {}", clientId, clientSecret);
+        oAuthClientRepository.save(oAuthClientEntity);
+
+        Map<String, Object> responseBody = new LinkedHashMap<>();
+        responseBody.put("clientId", clientId);
+        responseBody.put("clientSecret", clientSecret);
+        responseBody.put("redirect_uri", "http://localhost:7079/callback");
+        responseBody.put("scope", "openid");
+        responseBody.put("grant_type", "authorization_code");
+
+        RegisteredClient registeredClient = RegisteredClient
+                .withId(UUID.randomUUID().toString())
+                .clientId(clientId)
+                .clientSecret(oAuthClientEntity.getClientSecret())
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_BASIC)
+                .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+                .redirectUri(oAuthClientEntity.getRedirectUri())
+                .scope(oAuthClientEntity.getScopes())
+                .clientSettings(ClientSettings.builder()
+                        .requireProofKey(false)
+                        .build())
+                .tokenSettings(authorizationServerConfig.tokenSettings())
+                .build();
+        registeredClientRepository.save(registeredClient);
+        return new ResponseEntity<>(responseBody, HttpStatus.OK);
+    }
 }
