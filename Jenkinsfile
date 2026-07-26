@@ -9,7 +9,6 @@ pipeline {
         APP_NAME = "authentication-service"
         IMAGE_NAME = "authentication-service"
         IMAGE_TAG = "${BUILD_NUMBER}"
-        NAMESPACE = "default"
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
     }
 
@@ -65,65 +64,29 @@ pipeline {
             }
         }
 
-        stage('Start NGINX Ingress (if required)') {
+        stage('Start NGINX Pod') {
             steps {
                 sh '''
-                    if ! kubectl get namespace ingress-nginx >/dev/null 2>&1; then
-                        echo "Installing NGINX Ingress Controller..."
-
-                        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
-                        kubectl run nginx --image nginx
-                        kubectl wait \
-                          --namespace ingress-nginx \
-                          --for=condition=Ready pod \
-                          --selector=app.kubernetes.io/component=controller \
-                          --timeout=300s
+                    if ! kubectl get pod nginx >/dev/null 2>&1; then
+                        echo "Starting NGINX pod..."
+                        kubectl run nginx --image=nginx --restart=Never
                     else
-                        echo "NGINX Ingress already installed."
+                        echo "NGINX pod already running."
                     fi
-                '''
-            }
-        }
-        stage('Deploy to Kubernetes') {
-            steps {
-                sh '''
-                    echo "Starting NGINX Pod..."
-                    kubectl run nginx --image=nginx --restart=Never || true
 
-                    echo "Creating Authentication Deployment..."
-                    kubectl create deployment authentication-service --image=nginx || true
-
-                    echo "Waiting for deployment..."
-                    kubectl rollout status deployment/authentication-service --timeout=300s
-
-                    echo "Current Resources"
                     kubectl get pods
-                    kubectl get deployments
-                    kubectl get svc
                 '''
             }
         }
+
         stage('Deploy Application') {
             steps {
                 sh '''
                     kubectl apply -f authentication-deployment.yaml
-                '''
-            }
-        }
 
-        stage('Update Docker Image') {
-            steps {
-                sh '''
                     kubectl set image deployment/authentication-service \
-                    authentication-service=authentication-service:${BUILD_NUMBER} \
-                    --record || true
-                '''
-            }
-        }
+                        authentication-service=authentication-service:${BUILD_NUMBER}
 
-        stage('Wait for Rollout') {
-            steps {
-                sh '''
                     kubectl rollout status deployment/authentication-service --timeout=300s
                 '''
             }
@@ -132,7 +95,6 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 sh '''
-                    echo ""
                     echo "========== DEPLOYMENTS =========="
                     kubectl get deployments
 
@@ -146,7 +108,7 @@ pipeline {
 
                     echo ""
                     echo "========== CURRENT IMAGE =========="
-                    kubectl describe deployment authentication-service | grep Image
+                    kubectl describe deployment authentication-service | grep Image || true
 
                     echo ""
                     echo "========== EVENTS =========="
@@ -154,11 +116,9 @@ pipeline {
                 '''
             }
         }
-
     }
 
     post {
-
         success {
             echo "=================================="
             echo "Application deployed successfully!"
@@ -171,7 +131,7 @@ pipeline {
             echo "=================================="
 
             sh '''
-                kubectl get pods -A || true
+                kubectl get all
                 kubectl describe deployment authentication-service || true
             '''
         }
