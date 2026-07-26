@@ -46,7 +46,7 @@ pipeline {
             }
         }
 
-        stage('Ensure Dependencies Running') {
+        stage('Ensure MySQL Running') {
             steps {
                 sh '''
                     echo "Checking MySQL container..."
@@ -65,29 +65,13 @@ pipeline {
                         echo "MySQL is ready"
                     fi
 
-                    echo "Checking Redis container..."
-                    if docker ps -a --format '{{.Names}}' | grep -q "^auth_redis$"; then
-                        if docker ps --format '{{.Names}}' | grep -q "^auth_redis$"; then
-                            echo "Redis container is already running"
-                        else
-                            echo "Starting Redis container..."
-                            docker start auth_redis
-                        fi
-                    else
-                        echo "Creating and starting Redis container..."
-                        docker compose up -d redis
-                        echo "Waiting for Redis to be ready..."
-                        timeout 30 sh -c 'while ! docker exec auth_redis redis-cli ping 2>/dev/null | grep -q "PONG"; do sleep 2; done'
-                        echo "Redis is ready"
-                    fi
-
                     echo "Container Status:"
                     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
                 '''
             }
         }
 
-        stage('Deploy MySQL and Redis to Kubernetes') {
+        stage('Deploy MySQL to Kubernetes') {
             steps {
                 sh '''
                     echo "Checking if MySQL deployment exists in Kubernetes..."
@@ -149,58 +133,9 @@ EOF
                     fi
 
                     echo ""
-                    echo "Checking if Redis deployment exists in Kubernetes..."
-
-                    if kubectl get deployment redis &>/dev/null; then
-                        echo "Redis deployment already exists, checking status..."
-                        kubectl rollout status deployment/redis --timeout=60s
-                        echo "Redis is already running in Kubernetes"
-                    else
-                        echo "Creating Redis deployment and service..."
-                        cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-  labels:
-    app: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-      - name: redis
-        image: redis:7-alpine
-        ports:
-        - containerPort: 6379
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-service
-spec:
-  selector:
-    app: redis
-  ports:
-  - port: 6379
-    targetPort: 6379
-EOF
-                        echo "Waiting for Redis to be ready..."
-                        kubectl rollout status deployment/redis --timeout=120s
-                        echo "Redis deployment completed"
-                    fi
-
-                    echo ""
                     echo "Verifying Kubernetes services..."
-                    kubectl get svc mysql-service redis-service
+                    kubectl get svc mysql-service
                     kubectl get pods -l app=mysql
-                    kubectl get pods -l app=redis
                 '''
             }
         }
@@ -337,7 +272,7 @@ spec:
         - name: SERVER_PORT
           value: "${APP_PORT}"
         - name: SPRING_AUTOCONFIGURE_EXCLUDE
-          value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+          value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
         - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
           value: "false"
         resources:
@@ -350,13 +285,15 @@ spec:
         livenessProbe:
           tcpSocket:
             port: ${APP_PORT}
-          initialDelaySeconds: 90
+          initialDelaySeconds: 120
           periodSeconds: 10
+          failureThreshold: 10
         readinessProbe:
           tcpSocket:
             port: ${APP_PORT}
-          initialDelaySeconds: 60
+          initialDelaySeconds: 90
           periodSeconds: 5
+          failureThreshold: 10
 ---
 apiVersion: v1
 kind: Service
@@ -396,7 +333,7 @@ spec:
 EOF
 
                     echo "Waiting for rollout to complete..."
-                    kubectl rollout status deployment/${APP_NAME} --timeout=180s
+                    kubectl rollout status deployment/${APP_NAME} --timeout=300s
 
                     echo "Deployment Status:"
                     kubectl get pods -l app=${APP_NAME}
@@ -420,7 +357,7 @@ EOF
                         kubectl get pod $POD_NAME
 
                         echo "Pod Logs:"
-                        kubectl logs $POD_NAME --tail=30
+                        kubectl logs $POD_NAME --tail=50
 
                         echo "Service Details:"
                         kubectl get svc ${APP_NAME}
@@ -535,10 +472,6 @@ EOF
                 echo "MySQL Status:"
                 kubectl get pods -l app=mysql
                 kubectl describe pods -l app=mysql || echo "MySQL not found"
-
-                echo "Redis Status:"
-                kubectl get pods -l app=redis
-                kubectl describe pods -l app=redis || echo "Redis not found"
 
                 echo "Ingress Status:"
                 kubectl describe ingress ${APP_NAME}-ingress || echo "Ingress not found"

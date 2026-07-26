@@ -41,7 +41,7 @@ spec:
             - name: SERVER_PORT
               value: "7079"
             - name: SPRING_AUTOCONFIGURE_EXCLUDE
-              value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+              value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
             - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
               value: "false"
           resources:
@@ -54,13 +54,15 @@ spec:
           livenessProbe:
             tcpSocket:
               port: 7079
-            initialDelaySeconds: 90
+            initialDelaySeconds: 120
             periodSeconds: 10
+            failureThreshold: 10
           readinessProbe:
             tcpSocket:
               port: 7079
-            initialDelaySeconds: 60
+            initialDelaySeconds: 90
             periodSeconds: 5
+            failureThreshold: 10
 
 ---
 apiVersion: v1
