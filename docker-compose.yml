@@ -38,9 +38,9 @@ services:
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.MySQLDialect
       SPRING_JPA_DATABASE_PLATFORM: org.hibernate.dialect.MySQLDialect
       SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: "60000"
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
       SERVER_PORT: "7079"
+      SPRING_AUTOCONFIGURE_EXCLUDE: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+      SPRING_DATA_REDIS_REPOSITORIES_ENABLED: "false"
     depends_on:
       mysql:
         condition: service_healthy
@@ -48,4 +48,3 @@ services:
 
 volumes:
   mysql_data:
-  redis_data:

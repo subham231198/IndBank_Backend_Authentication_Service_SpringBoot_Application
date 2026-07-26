@@ -332,18 +332,14 @@ spec:
           value: "update"
         - name: SPRING_JPA_SHOW_SQL
           value: "true"
-        - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
-          value: "org.hibernate.dialect.MySQLDialect"
-        - name: SPRING_JPA_DATABASE_PLATFORM
-          value: "org.hibernate.dialect.MySQLDialect"
         - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
           value: "60000"
-        - name: SPRING_DATA_REDIS_HOST
-          value: "redis-service"
-        - name: SPRING_DATA_REDIS_PORT
-          value: "6379"
         - name: SERVER_PORT
           value: "${APP_PORT}"
+        - name: SPRING_AUTOCONFIGURE_EXCLUDE
+          value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration"
+        - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
+          value: "false"
         resources:
           requests:
             memory: "512Mi"
@@ -354,12 +350,12 @@ spec:
         livenessProbe:
           tcpSocket:
             port: ${APP_PORT}
-          initialDelaySeconds: 60
+          initialDelaySeconds: 90
           periodSeconds: 10
         readinessProbe:
           tcpSocket:
             port: ${APP_PORT}
-          initialDelaySeconds: 45
+          initialDelaySeconds: 60
           periodSeconds: 5
 ---
 apiVersion: v1
