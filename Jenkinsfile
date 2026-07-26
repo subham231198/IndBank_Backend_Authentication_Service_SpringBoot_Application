@@ -8,7 +8,8 @@ pipeline {
     environment {
         APP_NAME   = "authentication-service"
         IMAGE_NAME = "authentication-service"
-        IMAGE_TAG  = "${BUILD_NUMBER}"
+        IMAGE_TAG  = "${env.BUILD_NUMBER}"
+        VERSION_LABEL = "v${env.BUILD_NUMBER}"
         NAMESPACE  = "default"
         APP_PORT   = "7079"
         HOSTNAME   = "app.indbank.security.auth"
@@ -66,7 +67,7 @@ pipeline {
                     fi
 
                     echo "Container Status:"
-                    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                    docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"
                 '''
             }
         }
@@ -175,14 +176,31 @@ EOF
         stage('Build Docker Image') {
             steps {
                 sh '''
-                    echo "Building Docker image..."
-                    docker build -t ${IMAGE_NAME}:latest .
-                    docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG}
+                    echo "========================================="
+                    echo "Building Docker image with tag: ${IMAGE_TAG}"
+                    echo "========================================="
 
+                    # Remove old image with same tag (if exists)
+                    docker rmi ${IMAGE_NAME}:${IMAGE_TAG} 2>/dev/null || true
+
+                    # Build with --no-cache to ensure fresh build
+                    docker build --no-cache --pull -t ${IMAGE_NAME}:${IMAGE_TAG} .
+
+                    # Tag as latest
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+
+                    echo ""
+                    echo "========================================="
                     echo "Image details:"
-                    docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" | grep ${IMAGE_NAME}
+                    echo "========================================="
+                    docker images --format "table {{.Repository}}\\t{{.Tag}}\\t{{.ID}}\\t{{.Size}}\\t{{.CreatedAt}}" | grep ${IMAGE_NAME} || true
 
+                    echo ""
                     echo "Image built successfully: ${IMAGE_NAME}:${IMAGE_TAG}"
+
+                    echo ""
+                    echo "Image creation time:"
+                    docker inspect ${IMAGE_NAME}:${IMAGE_TAG} --format='{{.Created}}'
                 '''
             }
         }
@@ -209,25 +227,34 @@ EOF
         stage('Deploy Application to Kubernetes') {
             steps {
                 sh '''
-                    echo "Deploying application to Kubernetes..."
+                    echo "========================================="
+                    echo "Deploying to Kubernetes with image: ${IMAGE_NAME}:${IMAGE_TAG}"
+                    echo "Version Label: ${VERSION_LABEL}"
+                    echo "========================================="
 
+                    # Delete existing resources
                     kubectl delete deployment ${APP_NAME} --ignore-not-found=true
                     kubectl delete service ${APP_NAME} --ignore-not-found=true
                     kubectl delete ingress ${APP_NAME}-ingress --ignore-not-found=true
 
                     sleep 3
 
-                    echo "Verifying image exists locally..."
-                    if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${IMAGE_NAME}:latest$"; then
-                        echo "Image not found, building..."
-                        docker build -t ${IMAGE_NAME}:latest .
-                        docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG}
+                    # Verify the image exists locally with the specific tag
+                    echo "Verifying image exists locally: ${IMAGE_NAME}:${IMAGE_TAG}..."
+                    if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${IMAGE_NAME}:${IMAGE_TAG}$"; then
+                        echo "Image ${IMAGE_NAME}:${IMAGE_TAG} not found!"
+                        echo "Available images:"
+                        docker images | grep ${IMAGE_NAME}
+                        exit 1
                     else
-                        echo "Image ${IMAGE_NAME}:latest exists"
-                        docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG} 2>/dev/null || true
+                        echo "Image ${IMAGE_NAME}:${IMAGE_TAG} exists"
                     fi
 
-                    echo "Creating application deployment..."
+                    # Update latest tag
+                    echo "Updating latest tag..."
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest 2>/dev/null || true
+
+                    echo "Creating deployment with version: ${IMAGE_TAG}..."
                     cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
@@ -235,6 +262,7 @@ metadata:
   name: ${APP_NAME}
   labels:
     app: ${APP_NAME}
+    version: ${VERSION_LABEL}
 spec:
   replicas: 1
   selector:
@@ -249,11 +277,12 @@ spec:
     metadata:
       labels:
         app: ${APP_NAME}
+        version: ${VERSION_LABEL}
     spec:
       containers:
       - name: ${APP_NAME}
-        image: ${IMAGE_NAME}:latest
-        imagePullPolicy: IfNotPresent
+        image: ${IMAGE_NAME}:${IMAGE_TAG}
+        imagePullPolicy: Always
         ports:
         - containerPort: ${APP_PORT}
         env:
@@ -271,6 +300,8 @@ spec:
           value: "60000"
         - name: SERVER_PORT
           value: "${APP_PORT}"
+        - name: APP_VERSION
+          value: "${VERSION_LABEL}"
         - name: SPRING_AUTOCONFIGURE_EXCLUDE
           value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
         - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
@@ -301,6 +332,7 @@ metadata:
   name: ${APP_NAME}
   labels:
     app: ${APP_NAME}
+    version: ${VERSION_LABEL}
 spec:
   type: ClusterIP
   ports:
@@ -314,9 +346,15 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: ${APP_NAME}-ingress
+  labels:
+    app: ${APP_NAME}
+    version: ${VERSION_LABEL}
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 spec:
   ingressClassName: nginx
   rules:
@@ -335,12 +373,29 @@ EOF
                     echo "Waiting for rollout to complete..."
                     kubectl rollout status deployment/${APP_NAME} --timeout=300s
 
+                    echo ""
+                    echo "========================================="
                     echo "Deployment Status:"
-                    kubectl get pods -l app=${APP_NAME}
+                    echo "========================================="
+                    echo "Pods:"
+                    kubectl get pods -l app=${APP_NAME} -o wide
+                    echo ""
+                    echo "Services:"
                     kubectl get svc ${APP_NAME}
-                    kubectl get ingress
+                    echo ""
+                    echo "Ingress:"
+                    kubectl get ingress ${APP_NAME}-ingress
+                    echo ""
+                    echo "Images in use:"
+                    kubectl get pods -l app=${APP_NAME} -o jsonpath='{.items[*].spec.containers[*].image}'
 
-                    echo "Application deployment successful!"
+                    echo ""
+                    echo "========================================="
+                    echo "Deployment successful!"
+                    echo "Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+                    echo "Version: ${VERSION_LABEL}"
+                    echo "Host: ${HOSTNAME}"
+                    echo "========================================="
                 '''
             }
         }
@@ -348,26 +403,53 @@ EOF
         stage('Verify Deployment') {
             steps {
                 sh '''
+                    echo "========================================="
                     echo "Verifying deployment..."
+                    echo "========================================="
 
+                    # Get the pod name
                     POD_NAME=$(kubectl get pods -l app=${APP_NAME} -o jsonpath='{.items[0].metadata.name}')
 
-                    if [ -n "$POD_NAME" ]; then
-                        echo "Pod Status:"
-                        kubectl get pod $POD_NAME
-
-                        echo "Pod Logs:"
-                        kubectl logs $POD_NAME --tail=50
-
-                        echo "Service Details:"
-                        kubectl get svc ${APP_NAME}
-
-                        echo "Ingress Details:"
-                        kubectl get ingress ${APP_NAME}-ingress
-                    else
-                        echo "No pods found for ${APP_NAME}"
+                    if [ -z "$POD_NAME" ]; then
+                        echo "ERROR: No pods found!"
                         exit 1
                     fi
+
+                    echo "Pod Name: $POD_NAME"
+                    echo ""
+
+                    # Check the image being used
+                    echo "Image being used:"
+                    kubectl describe pod $POD_NAME | grep "Image:"
+                    echo ""
+
+                    # Check the actual image ID
+                    echo "Image ID:"
+                    kubectl describe pod $POD_NAME | grep "Image ID:"
+                    echo ""
+
+                    # Verify the image matches what we built
+                    ACTUAL_IMAGE=$(kubectl get pod $POD_NAME -o jsonpath='{.spec.containers[0].image}')
+                    EXPECTED_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+
+                    if [ "$ACTUAL_IMAGE" == "$EXPECTED_IMAGE" ]; then
+                        echo "Pod is using the correct image: $ACTUAL_IMAGE"
+                    else
+                        echo "ERROR: Pod is using wrong image!"
+                        echo "Expected: $EXPECTED_IMAGE"
+                        echo "Actual: $ACTUAL_IMAGE"
+                        exit 1
+                    fi
+                    echo ""
+
+                    # Check logs
+                    echo "Recent logs:"
+                    kubectl logs $POD_NAME --tail=50 || true
+                    echo ""
+
+                    echo "========================================="
+                    echo "Verification successful!"
+                    echo "========================================="
                 '''
             }
         }
@@ -380,8 +462,8 @@ EOF
                     echo "Checking pod status..."
                     RUNNING_PODS=$(kubectl get pods -l app=${APP_NAME} --field-selector=status.phase=Running -o name | wc -l | tr -d ' ')
 
-                    if [ "$RUNNING_PODS" = "5" ]; then
-                        echo "All 5 pods are running successfully!"
+                    if [ "$RUNNING_PODS" = "1" ]; then
+                        echo "Pod is running successfully!"
                         echo "Application is deployed and running."
 
                         echo ""
@@ -402,7 +484,7 @@ EOF
                         echo "Smoke tests passed!"
                     else
                         echo "ERROR: Not all pods are running"
-                        echo "Expected: 5, Running: $RUNNING_PODS"
+                        echo "Expected: 1, Running: $RUNNING_PODS"
                         kubectl get pods -l app=${APP_NAME}
                         exit 1
                     fi
