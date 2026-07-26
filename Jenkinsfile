@@ -1,16 +1,16 @@
 pipeline {
     agent any
 
+    tools {
+        maven 'Maven3'
+    }
+
     environment {
         APP_NAME = "authentication-service"
         IMAGE_NAME = "authentication-service"
         IMAGE_TAG = "${BUILD_NUMBER}"
-        K8S_NAMESPACE = "default"
+        NAMESPACE = "default"
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${env.PATH}"
-    }
-
-    tools {
-        maven 'Maven3'
     }
 
     stages {
@@ -18,11 +18,22 @@ pipeline {
         stage('Verify Environment') {
             steps {
                 sh '''
+                    echo "========== JAVA =========="
                     java -version
+
+                    echo "========== MAVEN =========="
                     mvn -version
+
+                    echo "========== DOCKER =========="
                     docker --version
+
+                    echo "========== KUBECTL =========="
                     kubectl version --client
+
+                    echo "========== CURRENT CONTEXT =========="
                     kubectl config current-context
+
+                    echo "========== CLUSTER =========="
                     kubectl get nodes
                 '''
             }
@@ -38,64 +49,116 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh """
+                sh '''
                     docker build \
-                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
-                        -t ${IMAGE_NAME}:latest .
-                """
+                        -t authentication-service:${BUILD_NUMBER} \
+                        -t authentication-service:latest .
+                '''
             }
         }
 
-        stage('Deploy to Kubernetes') {
+        stage('Verify Docker Image') {
             steps {
-                sh """
-                    kubectl apply -f authentication-deployment.yaml
+                sh '''
+                    docker images | grep authentication-service
+                '''
+            }
+        }
 
-                    kubectl set image deployment/${APP_NAME} \
-                        ${APP_NAME}=${IMAGE_NAME}:${IMAGE_TAG} \
-                        -n ${K8S_NAMESPACE}
-                """
+        stage('Start NGINX Ingress (if required)') {
+            steps {
+                sh '''
+                    if ! kubectl get namespace ingress-nginx >/dev/null 2>&1; then
+                        echo "Installing NGINX Ingress Controller..."
+
+                        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+
+                        kubectl wait \
+                          --namespace ingress-nginx \
+                          --for=condition=Ready pod \
+                          --selector=app.kubernetes.io/component=controller \
+                          --timeout=300s
+                    else
+                        echo "NGINX Ingress already installed."
+                    fi
+                '''
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                sh '''
+                    kubectl apply -f authentication-deployment.yaml
+                '''
+            }
+        }
+
+        stage('Update Docker Image') {
+            steps {
+                sh '''
+                    kubectl set image deployment/authentication-service \
+                    authentication-service=authentication-service:${BUILD_NUMBER}
+                '''
             }
         }
 
         stage('Wait for Rollout') {
             steps {
-                sh """
-                    kubectl rollout status deployment/${APP_NAME} \
-                        -n ${K8S_NAMESPACE}
-                """
+                sh '''
+                    kubectl rollout status deployment/authentication-service --timeout=300s
+                '''
             }
         }
 
         stage('Verify Deployment') {
             steps {
                 sh '''
-                    echo "========== PODS =========="
-                    kubectl get pods -o wide
-
                     echo ""
                     echo "========== DEPLOYMENTS =========="
                     kubectl get deployments
+
+                    echo ""
+                    echo "========== PODS =========="
+                    kubectl get pods -o wide
 
                     echo ""
                     echo "========== SERVICES =========="
                     kubectl get svc
 
                     echo ""
-                    echo "========== IMAGE =========="
+                    echo "========== CURRENT IMAGE =========="
                     kubectl describe deployment authentication-service | grep Image
+
+                    echo ""
+                    echo "========== EVENTS =========="
+                    kubectl get events --sort-by=.metadata.creationTimestamp | tail -20
                 '''
             }
         }
+
     }
 
     post {
+
         success {
-            echo "Application deployed successfully to Docker Desktop Kubernetes."
+            echo "=================================="
+            echo "Application deployed successfully!"
+            echo "=================================="
         }
 
         failure {
-            echo "Pipeline failed."
+            echo "=================================="
+            echo "Deployment failed."
+            echo "=================================="
+
+            sh '''
+                kubectl get pods -A || true
+                kubectl describe deployment authentication-service || true
+            '''
+        }
+
+        always {
+            echo "Pipeline Finished."
         }
     }
 }
