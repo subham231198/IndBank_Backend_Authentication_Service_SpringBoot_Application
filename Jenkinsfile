@@ -49,32 +49,32 @@ pipeline {
         stage('Ensure Dependencies Running') {
             steps {
                 sh '''
-                    echo "Checking MySQL..."
+                    echo "Checking MySQL container..."
                     if docker ps -a --format '{{.Names}}' | grep -q "^auth_mysql$"; then
                         if docker ps --format '{{.Names}}' | grep -q "^auth_mysql$"; then
-                            echo "MySQL is already running"
+                            echo "MySQL container is already running"
                         else
-                            echo "Starting MySQL..."
+                            echo "Starting MySQL container..."
                             docker start auth_mysql
                         fi
                     else
-                        echo "Creating and starting MySQL..."
+                        echo "Creating and starting MySQL container..."
                         docker compose up -d mysql
                         echo "Waiting for MySQL to be ready..."
                         timeout 60 sh -c 'while ! docker exec auth_mysql mysqladmin ping -h localhost -u root -pSM231198 --silent 2>/dev/null; do sleep 2; done'
                         echo "MySQL is ready"
                     fi
 
-                    echo "Checking Redis..."
+                    echo "Checking Redis container..."
                     if docker ps -a --format '{{.Names}}' | grep -q "^auth_redis$"; then
                         if docker ps --format '{{.Names}}' | grep -q "^auth_redis$"; then
-                            echo "Redis is already running"
+                            echo "Redis container is already running"
                         else
-                            echo "Starting Redis..."
+                            echo "Starting Redis container..."
                             docker start auth_redis
                         fi
                     else
-                        echo "Creating and starting Redis..."
+                        echo "Creating and starting Redis container..."
                         docker compose up -d redis
                         echo "Waiting for Redis to be ready..."
                         timeout 30 sh -c 'while ! docker exec auth_redis redis-cli ping 2>/dev/null | grep -q "PONG"; do sleep 2; done'
@@ -83,6 +83,124 @@ pipeline {
 
                     echo "Container Status:"
                     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                '''
+            }
+        }
+
+        stage('Deploy MySQL and Redis to Kubernetes') {
+            steps {
+                sh '''
+                    echo "Checking if MySQL deployment exists in Kubernetes..."
+
+                    if kubectl get deployment mysql &>/dev/null; then
+                        echo "MySQL deployment already exists, checking status..."
+                        kubectl rollout status deployment/mysql --timeout=60s
+                        echo "MySQL is already running in Kubernetes"
+                    else
+                        echo "Creating MySQL deployment and service..."
+                        cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "SM231198"
+        - name: MYSQL_DATABASE
+          value: "AuthenticationDB"
+        - name: MYSQL_ROOT_HOST
+          value: "%"
+        ports:
+        - containerPort: 3306
+        args:
+        - --default-authentication-plugin=mysql_native_password
+        - --character-set-server=utf8mb4
+        - --collation-server=utf8mb4_unicode_ci
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+spec:
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    targetPort: 3306
+EOF
+                        echo "Waiting for MySQL to be ready..."
+                        kubectl rollout status deployment/mysql --timeout=120s
+                        echo "MySQL deployment completed"
+                    fi
+
+                    echo ""
+                    echo "Checking if Redis deployment exists in Kubernetes..."
+
+                    if kubectl get deployment redis &>/dev/null; then
+                        echo "Redis deployment already exists, checking status..."
+                        kubectl rollout status deployment/redis --timeout=60s
+                        echo "Redis is already running in Kubernetes"
+                    else
+                        echo "Creating Redis deployment and service..."
+                        cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+EOF
+                        echo "Waiting for Redis to be ready..."
+                        kubectl rollout status deployment/redis --timeout=120s
+                        echo "Redis deployment completed"
+                    fi
+
+                    echo ""
+                    echo "Verifying Kubernetes services..."
+                    kubectl get svc mysql-service redis-service
+                    kubectl get pods -l app=mysql
+                    kubectl get pods -l app=redis
                 '''
             }
         }
@@ -122,7 +240,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
-                    echo "Building Docker image using docker build..."
+                    echo "Building Docker image..."
                     docker build -t ${IMAGE_NAME}:latest .
                     docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG}
 
@@ -153,10 +271,10 @@ pipeline {
             }
         }
 
-        stage('Deploy to Kubernetes') {
+        stage('Deploy Application to Kubernetes') {
             steps {
                 sh '''
-                    echo "Deploying to Kubernetes..."
+                    echo "Deploying application to Kubernetes..."
 
                     kubectl delete deployment ${APP_NAME} --ignore-not-found=true
                     kubectl delete service ${APP_NAME} --ignore-not-found=true
@@ -174,7 +292,7 @@ pipeline {
                         docker tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG} 2>/dev/null || true
                     fi
 
-                    echo "Creating deployment..."
+                    echo "Creating application deployment..."
                     cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
@@ -282,14 +400,14 @@ spec:
 EOF
 
                     echo "Waiting for rollout to complete..."
-                    kubectl rollout status deployment/${APP_NAME} --timeout=120s
+                    kubectl rollout status deployment/${APP_NAME} --timeout=180s
 
                     echo "Deployment Status:"
                     kubectl get pods -l app=${APP_NAME}
                     kubectl get svc ${APP_NAME}
                     kubectl get ingress
 
-                    echo "Deployment successful!"
+                    echo "Application deployment successful!"
                 '''
             }
         }
@@ -417,6 +535,14 @@ EOF
                 echo "Pod Status:"
                 kubectl get pods -l app=${APP_NAME}
                 kubectl describe pods -l app=${APP_NAME} || echo "No pods found"
+
+                echo "MySQL Status:"
+                kubectl get pods -l app=mysql
+                kubectl describe pods -l app=mysql || echo "MySQL not found"
+
+                echo "Redis Status:"
+                kubectl get pods -l app=redis
+                kubectl describe pods -l app=redis || echo "Redis not found"
 
                 echo "Ingress Status:"
                 kubectl describe ingress ${APP_NAME}-ingress || echo "Ingress not found"
