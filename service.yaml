@@ -1,0 +1,9 @@
+services:
+  authentication-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: authentication-service:latest
+    container_name: authentication-service
+    ports:
+      - "7079:7079"
