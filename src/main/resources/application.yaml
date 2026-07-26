@@ -43,4 +43,7 @@ server:
     acceptor-thread-count: 2
     max-connections: 20000
     accept-count: 200
+    socket:
+      so-timeout: 600000
+      so-keepalive: true
 
