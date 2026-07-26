@@ -73,7 +73,7 @@ public class OAuth2CustomHandler extends SessionAttributesService {
     @Value("${server.port:7079}")
     private int serverPort;
 
-    @Value("${server.host:172.19.0.4}")
+    @Value("${server.host:authentication-service}")
     private String serverHost;
 
     @Autowired
@@ -555,7 +555,7 @@ public class OAuth2CustomHandler extends SessionAttributesService {
         oAuthClientEntity.setClientSecret(bryptPasswordEncoder.encode(clientSecret));
         oAuthClientEntity.setGrantTypes("code");
         oAuthClientEntity.setScopes("openid");
-        oAuthClientEntity.setRedirectUri("http://localhost:7079/callback");
+        oAuthClientEntity.setRedirectUri("http://authentication-service:7079/callback");
 
         log.info("Client ID: {}, Client Secret: {}", clientId, clientSecret);
         oAuthClientRepository.save(oAuthClientEntity);
@@ -563,7 +563,7 @@ public class OAuth2CustomHandler extends SessionAttributesService {
         Map<String, Object> responseBody = new LinkedHashMap<>();
         responseBody.put("clientId", clientId);
         responseBody.put("clientSecret", clientSecret);
-        responseBody.put("redirect_uri", "http://localhost:7079/callback");
+        responseBody.put("redirect_uri", "http://authentication-service:7079/callback");
         responseBody.put("scope", "openid");
         responseBody.put("grant_type", "authorization_code");
 

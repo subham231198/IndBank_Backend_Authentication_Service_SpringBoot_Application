@@ -246,7 +246,7 @@ public class AuthorizationServerConfig {
                     .clientAuthenticationMethod(ClientAuthenticationMethod.CLIENT_SECRET_POST)
                     .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
                     .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
-                    .redirectUri("http://localhost:7079/callback")
+                    .redirectUri("http://authentication-service:7079/callback")
                     .scope("openid")
                     .clientSettings(ClientSettings.builder()
                             .requireProofKey(false)
@@ -312,7 +312,7 @@ public class AuthorizationServerConfig {
     @Bean
     public AuthorizationServerSettings authorizationServerSettings() {
         return AuthorizationServerSettings.builder()
-                .issuer("http://localhost:7079")
+                .issuer("http://authentication-service:7079/introspect")
                 .tokenIntrospectionEndpoint("/oauth2/introspect")
                 .build();
     }
