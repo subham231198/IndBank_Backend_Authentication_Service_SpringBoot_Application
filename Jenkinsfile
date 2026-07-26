@@ -50,10 +50,14 @@ pipeline {
             steps {
                 sh '''
                     docker build \
-                        -t ${IMAGE_NAME}:${IMAGE_TAG} \
-                        -t ${IMAGE_NAME}:latest .
+                      -t authentication-service:latest \
+                      -t authentication-service:${BUILD_NUMBER} .
 
-                    docker images | grep ${IMAGE_NAME}
+                    docker images | grep authentication-service
+
+                    echo "Loading image into Docker Desktop Kubernetes..."
+                    docker save authentication-service:latest -o authentication-service.tar
+                    docker desktop kubernetes images load authentication-service.tar
                 '''
             }
         }
