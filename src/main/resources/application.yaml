@@ -32,4 +32,15 @@ logging:
 
 server:
   port: 7079
+  tomcat:
+    connection-timeout: 300000
+    keep-alive-timeout: 300000
+    max-keep-alive-requests: 1000
+    threads:
+      max: 600
+      min-spare: 50
+    # Prevent socket timeouts
+    acceptor-thread-count: 2
+    max-connections: 20000
+    accept-count: 200
 
