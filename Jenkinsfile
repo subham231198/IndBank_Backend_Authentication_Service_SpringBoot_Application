@@ -24,6 +24,9 @@ pipeline {
                     mvn -version
                     docker --version
                     kubectl version --client
+                    echo "Workspace: ${WORKSPACE}"
+                    echo "YAML file path: ${K8S_YAML}"
+                    ls -la ${K8S_YAML} || echo "YAML file not found"
                 '''
             }
         }
@@ -134,10 +137,19 @@ EOF
                 sh '''
                     echo "Deploying application with version: ${VERSION_LABEL}"
 
-                    # Ensure we use latest image
+                    # Verify YAML file exists
+                    if [ ! -f "${K8S_YAML}" ]; then
+                        echo "ERROR: YAML file not found at ${K8S_YAML}"
+                        ls -la ${WORKSPACE}/
+                        exit 1
+                    fi
+
+                    echo "Using YAML file: ${K8S_YAML}"
+
+                    # Ensure we use latest image (YAML already has :latest)
                     echo "Using image: ${IMAGE_NAME}:latest"
 
-                    # Apply the YAML (it already uses latest tag)
+                    # Apply the YAML
                     kubectl apply -f ${K8S_YAML}
 
                     # Force restart to pick up latest image
@@ -161,6 +173,7 @@ EOF
 
                     if [ -z "$POD_NAME" ]; then
                         echo "ERROR: No pods found for application"
+                        kubectl get pods -l app=${APP_NAME}
                         exit 1
                     fi
 
@@ -172,12 +185,20 @@ EOF
                     kubectl describe pod $POD_NAME | grep "Image:"
                     echo ""
 
+                    # Check imagePullPolicy
+                    echo "Image Pull Policy:"
+                    kubectl get pod $POD_NAME -o jsonpath='{.spec.containers[0].imagePullPolicy}'
+                    echo ""
+                    echo ""
+
                     # Show pod status
                     kubectl get pods -l app=${APP_NAME}
                     kubectl get svc ${APP_NAME}
                     kubectl get ingress ${APP_NAME}-ingress
 
                     # Show logs
+                    echo ""
+                    echo "Recent logs:"
                     kubectl logs $POD_NAME --tail=20
                 '''
             }
@@ -192,6 +213,10 @@ EOF
                     if [ "$RUNNING_PODS" = "1" ]; then
                         echo "Application is running successfully"
                         echo "URL: http://${HOSTNAME}"
+
+                        # Optional: Test the endpoint
+                        echo "Testing application endpoint..."
+                        curl -s -o /dev/null -w "HTTP Status: %{http_code}\\n" http://${HOSTNAME}/actuator/health 2>/dev/null || echo "Health endpoint not available (might be normal)"
                     else
                         echo "Application is not running properly"
                         kubectl get pods -l app=${APP_NAME}
@@ -210,6 +235,7 @@ EOF
                 echo "=========================================="
                 echo "Application: ${APP_NAME}"
                 echo "Version: ${VERSION_LABEL}"
+                echo "Image Tag: ${IMAGE_TAG}"
                 echo "URL: http://${HOSTNAME}"
                 echo "=========================================="
             '''
@@ -221,17 +247,27 @@ EOF
                 echo "Deployment Failed"
                 echo "=========================================="
                 echo "Debug Information:"
-                echo "Application Pods:"
+                echo ""
+                echo "1. Application Pods:"
                 kubectl get pods -l app=${APP_NAME}
                 echo ""
-                echo "Application Description:"
-                kubectl describe pods -l app=${APP_NAME}
+                echo "2. Application Description:"
+                kubectl describe pods -l app=${APP_NAME} | tail -50
                 echo ""
-                echo "MySQL Pods:"
+                echo "3. MySQL Pods:"
                 kubectl get pods -l app=mysql
                 echo ""
-                echo "Recent Events:"
+                echo "4. All Services:"
+                kubectl get svc
+                echo ""
+                echo "5. All Ingress:"
+                kubectl get ingress
+                echo ""
+                echo "6. Recent Events:"
                 kubectl get events --sort-by='.lastTimestamp' | tail -20
+                echo ""
+                echo "7. Docker Images:"
+                docker images | grep ${IMAGE_NAME}
             '''
         }
 
