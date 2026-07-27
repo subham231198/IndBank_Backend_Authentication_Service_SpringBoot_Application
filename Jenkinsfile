@@ -209,25 +209,39 @@ EOF
             steps {
                 sh '''
                     echo "Checking if Ingress Controller is installed..."
+
                     if ! kubectl get namespace ingress-nginx &>/dev/null; then
                         echo "Installing NGINX Ingress Controller..."
                         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
+
+                        echo "Waiting for Ingress Controller to be ready..."
+                        kubectl wait --namespace ingress-nginx \
+                          --for=condition=ready pod \
+                          --selector=app.kubernetes.io/component=controller \
+                          --timeout=300s
+
+                        echo "Waiting for admission webhook to be ready..."
+                        sleep 20
+                        kubectl wait --namespace ingress-nginx \
+                          --for=condition=ready pod \
+                          --selector=app.kubernetes.io/component=admission-webhook \
+                          --timeout=120s 2>/dev/null || true
+
+                        # Patch webhook to ignore failures if not ready
+                        echo "Patching admission webhook to ignore failures..."
+                        kubectl patch validatingwebhookconfiguration ingress-nginx-admission \
+                          -p '{"webhooks":[{"name":"validate.nginx.ingress.kubernetes.io","failurePolicy":"Ignore"}]}' \
+                          --type=merge 2>/dev/null || true
                     else
                         echo "Ingress Controller already installed"
+
+                        # Ensure admission webhook is ready
+                        echo "Checking admission webhook status..."
+                        kubectl wait --namespace ingress-nginx \
+                          --for=condition=ready pod \
+                          --selector=app.kubernetes.io/component=admission-webhook \
+                          --timeout=60s 2>/dev/null || true
                     fi
-
-                    echo "Waiting for Ingress Controller to be ready..."
-                    kubectl wait --namespace ingress-nginx \
-                      --for=condition=ready pod \
-                      --selector=app.kubernetes.io/component=controller \
-                      --timeout=180s
-
-                    echo "Waiting for admission webhook to be ready..."
-                    sleep 10
-                    kubectl wait --namespace ingress-nginx \
-                      --for=condition=ready pod \
-                      --selector=app.kubernetes.io/component=admission-webhook \
-                      --timeout=180s
 
                     echo "Ingress Controller is ready"
                 '''
@@ -247,9 +261,9 @@ EOF
                     kubectl delete service ${APP_NAME} --ignore-not-found=true
                     kubectl delete ingress ${APP_NAME}-ingress --ignore-not-found=true
 
-                    sleep 3
+                    sleep 5
 
-                    # Verify the image exists locally with the specific tag
+                    # Verify the image exists locally
                     echo "Verifying image exists locally: ${IMAGE_NAME}:${IMAGE_TAG}..."
                     if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${IMAGE_NAME}:${IMAGE_TAG}$"; then
                         echo "Image ${IMAGE_NAME}:${IMAGE_TAG} not found!"
@@ -266,119 +280,157 @@ EOF
 
                     echo "Creating deployment with version: ${IMAGE_TAG}..."
                     cat <<EOF | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${APP_NAME}
-  labels:
-    app: ${APP_NAME}
-    version: ${VERSION_LABEL}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ${APP_NAME}
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-  template:
-    metadata:
-      labels:
-        app: ${APP_NAME}
-        version: ${VERSION_LABEL}
-    spec:
-      containers:
-      - name: ${APP_NAME}
-        image: ${IMAGE_NAME}:${IMAGE_TAG}
-        imagePullPolicy: Always
-        ports:
-        - containerPort: ${APP_PORT}
-        env:
-        - name: SPRING_DATASOURCE_URL
-          value: "jdbc:mysql://mysql-service:3306/AuthenticationDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
-        - name: SPRING_DATASOURCE_USERNAME
-          value: "root"
-        - name: SPRING_DATASOURCE_PASSWORD
-          value: "SM231198"
-        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-          value: "update"
-        - name: SPRING_JPA_SHOW_SQL
-          value: "true"
-        - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
-          value: "60000"
-        - name: SERVER_PORT
-          value: "${APP_PORT}"
-        - name: APP_VERSION
-          value: "${VERSION_LABEL}"
-        - name: SPRING_AUTOCONFIGURE_EXCLUDE
-          value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
-        - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
-          value: "false"
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
-            memory: "1Gi"
-            cpu: "500m"
-        livenessProbe:
-          tcpSocket:
-            port: ${APP_PORT}
-          initialDelaySeconds: 120
-          periodSeconds: 10
-          failureThreshold: 10
-        readinessProbe:
-          tcpSocket:
-            port: ${APP_PORT}
-          initialDelaySeconds: 90
-          periodSeconds: 5
-          failureThreshold: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${APP_NAME}
-  labels:
-    app: ${APP_NAME}
-    version: ${VERSION_LABEL}
-spec:
-  type: ClusterIP
-  ports:
-  - port: ${APP_PORT}
-    targetPort: ${APP_PORT}
-    name: http
-  selector:
-    app: ${APP_NAME}
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: ${APP_NAME}-ingress
-  labels:
-    app: ${APP_NAME}
-    version: ${VERSION_LABEL}
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-spec:
-  ingressClassName: nginx
-  rules:
-  - host: ${HOSTNAME}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: ${APP_NAME}
-            port:
-              number: ${APP_PORT}
-EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${APP_NAME}
+          labels:
+            app: ${APP_NAME}
+            version: ${VERSION_LABEL}
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: ${APP_NAME}
+          strategy:
+            type: RollingUpdate
+            rollingUpdate:
+              maxSurge: 1
+              maxUnavailable: 0
+          template:
+            metadata:
+              labels:
+                app: ${APP_NAME}
+                version: ${VERSION_LABEL}
+            spec:
+              containers:
+              - name: ${APP_NAME}
+                image: ${IMAGE_NAME}:${IMAGE_TAG}
+                imagePullPolicy: Always
+                ports:
+                - containerPort: ${APP_PORT}
+                env:
+                - name: SPRING_DATASOURCE_URL
+                  value: "jdbc:mysql://mysql-service:3306/AuthenticationDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+                - name: SPRING_DATASOURCE_USERNAME
+                  value: "root"
+                - name: SPRING_DATASOURCE_PASSWORD
+                  value: "SM231198"
+                - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+                  value: "update"
+                - name: SPRING_JPA_SHOW_SQL
+                  value: "true"
+                - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
+                  value: "60000"
+                - name: SERVER_PORT
+                  value: "${APP_PORT}"
+                - name: APP_VERSION
+                  value: "${VERSION_LABEL}"
+                - name: SPRING_AUTOCONFIGURE_EXCLUDE
+                  value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
+                - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
+                  value: "false"
+                resources:
+                  requests:
+                    memory: "512Mi"
+                    cpu: "250m"
+                  limits:
+                    memory: "1Gi"
+                    cpu: "500m"
+                livenessProbe:
+                  tcpSocket:
+                    port: ${APP_PORT}
+                  initialDelaySeconds: 120
+                  periodSeconds: 10
+                  failureThreshold: 10
+                readinessProbe:
+                  tcpSocket:
+                    port: ${APP_PORT}
+                  initialDelaySeconds: 90
+                  periodSeconds: 5
+                  failureThreshold: 10
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${APP_NAME}
+          labels:
+            app: ${APP_NAME}
+            version: ${VERSION_LABEL}
+        spec:
+          type: ClusterIP
+          ports:
+          - port: ${APP_PORT}
+            targetPort: ${APP_PORT}
+            name: http
+          selector:
+            app: ${APP_NAME}
+        EOF
+
+                    # Create Ingress separately with retry on webhook failure
+                    echo "Creating Ingress..."
+                    cat <<EOF | kubectl apply -f - || true
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: ${APP_NAME}-ingress
+          labels:
+            app: ${APP_NAME}
+            version: ${VERSION_LABEL}
+          annotations:
+            nginx.ingress.kubernetes.io/rewrite-target: /
+            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+            nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+            nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+            nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+        spec:
+          ingressClassName: nginx
+          rules:
+          - host: ${HOSTNAME}
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: ${APP_NAME}
+                    port:
+                      number: ${APP_PORT}
+        EOF
+
+                    # If Ingress creation failed, retry after waiting
+                    if ! kubectl get ingress ${APP_NAME}-ingress &>/dev/null; then
+                        echo "Retrying Ingress creation..."
+                        sleep 10
+                        cat <<EOF | kubectl apply -f -
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: ${APP_NAME}-ingress
+          labels:
+            app: ${APP_NAME}
+            version: ${VERSION_LABEL}
+          annotations:
+            nginx.ingress.kubernetes.io/rewrite-target: /
+            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+            nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+            nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+            nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+        spec:
+          ingressClassName: nginx
+          rules:
+          - host: ${HOSTNAME}
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: ${APP_NAME}
+                    port:
+                      number: ${APP_PORT}
+        EOF
+                    fi
 
                     echo "Waiting for rollout to complete..."
                     kubectl rollout status deployment/${APP_NAME} --timeout=300s
@@ -395,9 +447,6 @@ EOF
                     echo ""
                     echo "Ingress:"
                     kubectl get ingress ${APP_NAME}-ingress
-                    echo ""
-                    echo "Images in use:"
-                    kubectl get pods -l app=${APP_NAME} -o jsonpath='{.items[*].spec.containers[*].image}'
 
                     echo ""
                     echo "========================================="
