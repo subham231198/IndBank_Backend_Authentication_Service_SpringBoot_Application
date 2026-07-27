@@ -23,7 +23,7 @@ public class ConnectionKeepAlive {
 
 
 
-    @Scheduled(fixedDelay = 20000)
+    @Scheduled(fixedDelay = 3000)
     public void keepAliveAuthorization() {
         try {
             String url = selfHost + healthUrl;
