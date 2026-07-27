@@ -212,14 +212,24 @@ EOF
                     if ! kubectl get namespace ingress-nginx &>/dev/null; then
                         echo "Installing NGINX Ingress Controller..."
                         kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
-                        echo "Waiting for Ingress Controller to be ready..."
-                        kubectl wait --namespace ingress-nginx \
-                          --for=condition=ready pod \
-                          --selector=app.kubernetes.io/component=controller \
-                          --timeout=120s
                     else
                         echo "Ingress Controller already installed"
                     fi
+
+                    echo "Waiting for Ingress Controller to be ready..."
+                    kubectl wait --namespace ingress-nginx \
+                      --for=condition=ready pod \
+                      --selector=app.kubernetes.io/component=controller \
+                      --timeout=180s
+
+                    echo "Waiting for admission webhook to be ready..."
+                    sleep 10
+                    kubectl wait --namespace ingress-nginx \
+                      --for=condition=ready pod \
+                      --selector=app.kubernetes.io/component=admission-webhook \
+                      --timeout=180s
+
+                    echo "Ingress Controller is ready"
                 '''
             }
         }
