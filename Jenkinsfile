@@ -217,158 +217,146 @@ EOF
                     echo "Version Label: ${VERSION_LABEL}"
                     echo "========================================="
 
-                    # 1. First, update the deployment (don't delete!)
-                    echo "Updating deployment with new image..."
+                    kubectl delete deployment ${APP_NAME} --ignore-not-found=true
+                    kubectl delete service ${APP_NAME} --ignore-not-found=true
+                    kubectl delete ingress ${APP_NAME}-ingress --ignore-not-found=true
 
-                    # Check if deployment exists
-                    if kubectl get deployment ${APP_NAME} &>/dev/null; then
-                        echo "Deployment exists, updating image..."
-                        kubectl set image deployment/${APP_NAME} ${APP_NAME}=${IMAGE_NAME}:${IMAGE_TAG}
-                        kubectl patch deployment ${APP_NAME} -p "{\"spec\":{\"template\":{\"metadata\":{\"labels\":{\"version\":\"${VERSION_LABEL}\"}}}}}"
+                    sleep 3
+
+                    echo "Verifying image exists locally: ${IMAGE_NAME}:${IMAGE_TAG}..."
+                    if ! docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${IMAGE_NAME}:${IMAGE_TAG}$"; then
+                        echo "Image ${IMAGE_NAME}:${IMAGE_TAG} not found!"
+                        echo "Available images:"
+                        docker images | grep ${IMAGE_NAME}
+                        exit 1
                     else
-                        echo "Creating new deployment..."
-                        cat <<EOF | kubectl apply -f -
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: ${APP_NAME}
-          labels:
-            app: ${APP_NAME}
-            version: ${VERSION_LABEL}
-        spec:
-          replicas: 2  # ← Minimum 2 for zero downtime!
-          selector:
-            matchLabels:
-              app: ${APP_NAME}
-          strategy:
-            type: RollingUpdate
-            rollingUpdate:
-              maxSurge: 1
-              maxUnavailable: 0  # ← Zero downtime!
-          template:
-            metadata:
-              labels:
-                app: ${APP_NAME}
-                version: ${VERSION_LABEL}
-            spec:
-              containers:
-              - name: ${APP_NAME}
-                image: ${IMAGE_NAME}:${IMAGE_TAG}
-                imagePullPolicy: Always
-                ports:
-                - containerPort: ${APP_PORT}
-                env:
-                - name: JAVA_OPTS
-                  value: "-Xms768m -Xmx1024m -XX:MaxMetaspaceSize=150m -XX:+UseG1GC -XX:+UseContainerSupport"
-                - name: SPRING_DATASOURCE_URL
-                  value: "jdbc:mysql://mysql-service:3306/AuthenticationDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
-                - name: SPRING_DATASOURCE_USERNAME
-                  value: "root"
-                - name: SPRING_DATASOURCE_PASSWORD
-                  value: "SM231198"
-                - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-                  value: "update"
-                - name: SPRING_JPA_SHOW_SQL
-                  value: "true"
-                - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
-                  value: "20"
-                - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
-                  value: "10"
-                - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
-                  value: "60000"
-                - name: SERVER_PORT
-                  value: "${APP_PORT}"
-                - name: APP_VERSION
-                  value: "${VERSION_LABEL}"
-                - name: SPRING_AUTOCONFIGURE_EXCLUDE
-                  value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
-                - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
-                  value: "false"
-                resources:
-                  requests:
-                    memory: "1024Mi"
-                    cpu: "500m"
-                  limits:
-                    memory: "2048Mi"
-                    cpu: "1000m"
-                livenessProbe:
-                  tcpSocket:
-                    port: ${APP_PORT}
-                  initialDelaySeconds: 120
-                  periodSeconds: 10
-                  failureThreshold: 10
-                readinessProbe:
-                  tcpSocket:
-                    port: ${APP_PORT}
-                  initialDelaySeconds: 90
-                  periodSeconds: 5
-                  failureThreshold: 10
-        EOF
+                        echo "Image ${IMAGE_NAME}:${IMAGE_TAG} exists"
                     fi
 
-                    # 2. Ensure Service exists (don't delete)
-                    if ! kubectl get service ${APP_NAME} &>/dev/null; then
-                        echo "Creating service..."
-                        cat <<EOF | kubectl apply -f -
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: ${APP_NAME}
-          labels:
-            app: ${APP_NAME}
-            version: ${VERSION_LABEL}
-        spec:
-          type: ClusterIP
-          ports:
-          - port: ${APP_PORT}
-            targetPort: ${APP_PORT}
-            name: http
-          selector:
-            app: ${APP_NAME}
-        EOF
-                    fi
+                    echo "Updating latest tag..."
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest 2>/dev/null || true
 
-                    # 3. Ensure Ingress exists (don't delete)
-                    if ! kubectl get ingress ${APP_NAME}-ingress &>/dev/null; then
-                        echo "Creating ingress..."
-                        cat <<EOF | kubectl apply -f -
-        apiVersion: networking.k8s.io/v1
-        kind: Ingress
-        metadata:
-          name: ${APP_NAME}-ingress
-          labels:
-            app: ${APP_NAME}
-            version: ${VERSION_LABEL}
-          annotations:
-            nginx.ingress.kubernetes.io/rewrite-target: /
-            nginx.ingress.kubernetes.io/ssl-redirect: "false"
-        spec:
-          ingressClassName: nginx
-          rules:
-          - host: ${HOSTNAME}
-            http:
-              paths:
-              - path: /
-                pathType: Prefix
-                backend:
-                  service:
-                    name: ${APP_NAME}
-                    port:
-                      number: ${APP_PORT}
-        EOF
-                    fi
+                    echo "Creating deployment with version: ${IMAGE_TAG}..."
+                    cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  labels:
+    app: ${APP_NAME}
+    version: ${VERSION_LABEL}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+        version: ${VERSION_LABEL}
+    spec:
+      containers:
+      - name: ${APP_NAME}
+        image: ${IMAGE_NAME}:${IMAGE_TAG}
+        imagePullPolicy: Always
+        ports:
+        - containerPort: ${APP_PORT}
+        env:
+        - name: JAVA_OPTS
+          value: "-Xms768m -Xmx1024m -XX:MaxMetaspaceSize=150m -XX:+UseG1GC -XX:+UseContainerSupport"
+        - name: SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE
+          value: "20"
+        - name: SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE
+          value: "10"
+        - name: SPRING_DATASOURCE_URL
+          value: "jdbc:mysql://mysql-service:3306/AuthenticationDB?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+        - name: SPRING_DATASOURCE_USERNAME
+          value: "root"
+        - name: SPRING_DATASOURCE_PASSWORD
+          value: "SM231198"
+        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+          value: "update"
+        - name: SPRING_JPA_SHOW_SQL
+          value: "true"
+        - name: SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT
+          value: "60000"
+        - name: SERVER_PORT
+          value: "${APP_PORT}"
+        - name: APP_VERSION
+          value: "${VERSION_LABEL}"
+        - name: SPRING_AUTOCONFIGURE_EXCLUDE
+          value: "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration,org.springframework.boot.autoconfigure.session.SessionAutoConfiguration"
+        - name: SPRING_DATA_REDIS_REPOSITORIES_ENABLED
+          value: "false"
+        resources:
+          requests:
+            memory: "1024Mi"
+            cpu: "500m"
+          limits:
+            memory: "2048Mi"
+            cpu: "1000m"
+        livenessProbe:
+          tcpSocket:
+            port: ${APP_PORT}
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          failureThreshold: 10
+        readinessProbe:
+          tcpSocket:
+            port: ${APP_PORT}
+          initialDelaySeconds: 90
+          periodSeconds: 5
+          failureThreshold: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}
+  labels:
+    app: ${APP_NAME}
+    version: ${VERSION_LABEL}
+spec:
+  type: ClusterIP
+  ports:
+  - port: ${APP_PORT}
+    targetPort: ${APP_PORT}
+    name: http
+  selector:
+    app: ${APP_NAME}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${APP_NAME}-ingress
+  labels:
+    app: ${APP_NAME}
+    version: ${VERSION_LABEL}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: ${HOSTNAME}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ${APP_NAME}
+            port:
+              number: ${APP_PORT}
+EOF
 
-                    # 4. Wait for rollout (zero downtime)
                     echo "Waiting for rollout to complete..."
-                    kubectl rollout status deployment/${APP_NAME} --timeout=300s
-
-                    # 5. Verify new pods are healthy
-                    echo "Verifying new pods..."
-                    NEW_PODS=$(kubectl get pods -l app=${APP_NAME} -o jsonpath='{.items[*].metadata.name}')
-                    for POD in $NEW_PODS; do
-                        echo "Checking pod: $POD"
-                        kubectl wait --for=condition=ready pod/$POD --timeout=60s
-                    done
+                    kubectl rollout status deployment/${APP_NAME} --timeout=180s
 
                     echo ""
                     echo "========================================="
@@ -382,6 +370,10 @@ EOF
                     echo ""
                     echo "Ingress:"
                     kubectl get ingress ${APP_NAME}-ingress
+                    echo ""
+                    echo "Images in use:"
+                    kubectl get pods -l app=${APP_NAME} -o jsonpath='{.items[*].spec.containers[*].image}'
+
                     echo ""
                     echo "========================================="
                     echo "Deployment successful!"
