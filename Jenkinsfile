@@ -279,7 +279,7 @@ EOF
                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest 2>/dev/null || true
 
                     echo "Creating deployment with version: ${IMAGE_TAG}..."
-                    cat <<EOF | kubectl apply -f -
+                    cat <<'EOF' | kubectl apply -f -
         apiVersion: apps/v1
         kind: Deployment
         metadata:
@@ -367,9 +367,8 @@ EOF
             app: ${APP_NAME}
         EOF
 
-                    # Create Ingress separately with retry on webhook failure
                     echo "Creating Ingress..."
-                    cat <<EOF | kubectl apply -f - || true
+                    cat <<'EOF' | kubectl apply -f - || true
         apiVersion: networking.k8s.io/v1
         kind: Ingress
         metadata:
@@ -402,7 +401,7 @@ EOF
                     if ! kubectl get ingress ${APP_NAME}-ingress &>/dev/null; then
                         echo "Retrying Ingress creation..."
                         sleep 10
-                        cat <<EOF | kubectl apply -f -
+                        cat <<'EOF' | kubectl apply -f -
         apiVersion: networking.k8s.io/v1
         kind: Ingress
         metadata:
