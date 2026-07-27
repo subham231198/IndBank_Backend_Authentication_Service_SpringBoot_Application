@@ -1,9 +1,19 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: ${APP_NAME}-ingress
+  name: authentication-service-ingress
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    nginx.ingress.kubernetes.io/enable-validation: "false"
-  generateName: ${APP_NAME}-
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.indbank.security.auth
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: authentication-service
+                port:
+                  number: 7079

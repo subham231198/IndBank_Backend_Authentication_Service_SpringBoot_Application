@@ -206,47 +206,23 @@ EOF
         }
 
         stage('Install Ingress Controller') {
-            steps {
-                sh '''
-                    echo "Checking if Ingress Controller is installed..."
-
-                    if ! kubectl get namespace ingress-nginx &>/dev/null; then
-                        echo "Installing NGINX Ingress Controller..."
-                        kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
-
-                        echo "Waiting for Ingress Controller to be ready..."
-                        kubectl wait --namespace ingress-nginx \
-                          --for=condition=ready pod \
-                          --selector=app.kubernetes.io/component=controller \
-                          --timeout=300s
-
-                        echo "Waiting for admission webhook to be ready..."
-                        sleep 20
-                        kubectl wait --namespace ingress-nginx \
-                          --for=condition=ready pod \
-                          --selector=app.kubernetes.io/component=admission-webhook \
-                          --timeout=120s 2>/dev/null || true
-
-                        # Patch webhook to ignore failures if not ready
-                        echo "Patching admission webhook to ignore failures..."
-                        kubectl patch validatingwebhookconfiguration ingress-nginx-admission \
-                          -p '{"webhooks":[{"name":"validate.nginx.ingress.kubernetes.io","failurePolicy":"Ignore"}]}' \
-                          --type=merge 2>/dev/null || true
-                    else
-                        echo "Ingress Controller already installed"
-
-                        # Ensure admission webhook is ready
-                        echo "Checking admission webhook status..."
-                        kubectl wait --namespace ingress-nginx \
-                          --for=condition=ready pod \
-                          --selector=app.kubernetes.io/component=admission-webhook \
-                          --timeout=60s 2>/dev/null || true
-                    fi
-
-                    echo "Ingress Controller is ready"
-                '''
-            }
-        }
+                    steps {
+                        sh '''
+                            echo "Checking if Ingress Controller is installed..."
+                            if ! kubectl get namespace ingress-nginx &>/dev/null; then
+                                echo "Installing NGINX Ingress Controller..."
+                                kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
+                                echo "Waiting for Ingress Controller to be ready..."
+                                kubectl wait --namespace ingress-nginx \
+                                  --for=condition=ready pod \
+                                  --selector=app.kubernetes.io/component=controller \
+                                  --timeout=120s
+                            else
+                                echo "Ingress Controller already installed"
+                            fi
+                        '''
+                    }
+                }
 
         stage('Deploy Application to Kubernetes') {
             steps {
@@ -333,9 +309,9 @@ EOF
                 resources:
                   requests:
                     memory: "512Mi"
-                    cpu: "250m"
+                    cpu: "500m"
                   limits:
-                    memory: "1Gi"
+                    memory: "2Gi"
                     cpu: "500m"
                 livenessProbe:
                   tcpSocket:
